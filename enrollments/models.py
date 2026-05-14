@@ -1,8 +1,14 @@
 from django.db import models
 
 class Enrollment(models.Model):
+    LEVEL_CHOICES = [
+        ('MESTRADO', 'Mestrado'),
+        ('DOUTORADO', 'Doutorado'),
+    ]
     # --- DADOS PESSOAIS (Existentes + Novos do Doc) ---
     full_name = models.CharField(max_length=255, verbose_name="Nome Completo")
+    social_name = models.CharField(max_length=255, null=True, blank=True)
+    program_level = models.CharField(max_length=10, choices=LEVEL_CHOICES)
     cpf = models.CharField(max_length=14, unique=True)
     date_of_birth = models.DateField()
     rg = models.CharField(max_length=20)
