@@ -1,8 +1,10 @@
 from rest_framework import generics, status
 from rest_framework.response import Response
+from rest_framework.views import APIView
 from .models import Enrollment
-from .serializers import EnrollmentSerializer
+from .serializers import EnrollmentSerializer, LoginCandidatoSerializer
 from rest_framework.permissions import IsAuthenticated
+from rest_framework_simplejwt.views import TokenObtainPairView
 
 # 1. View para Criar Inscrições (Usada pelo formulário React)
 class EnrollmentCreateView(generics.CreateAPIView):
@@ -26,3 +28,34 @@ class EnrollmentListView(generics.ListAPIView):
     queryset = Enrollment.objects.all().order_by('-id') 
     serializer_class = EnrollmentSerializer
     permission_classes = [IsAuthenticated]
+
+# 1. A View de Login que usa o nosso Serializer customizado
+class LoginCandidatoView(TokenObtainPairView):
+    serializer_class = LoginCandidatoSerializer
+
+# 2. A View de Troca de Senha Segura
+class TrocarSenhaView(APIView):
+    permission_classes = [IsAuthenticated] # Só quem tem o Token entra aqui
+
+    def post(self, request):
+        user = request.user
+        senha_atual = request.data.get('senha_atual')
+        nova_senha = request.data.get('nova_senha')
+
+        # Checa se a senha "provisória" que ele digitou está certa
+        if not user.check_password(senha_atual):
+            return Response({"error": "A senha atual está incorreta."}, status=400)
+        
+        # Salva a nova senha com hash de segurança
+        user.set_password(nova_senha)
+        user.save()
+        
+        # Atualiza o status do candidato para dizer que não é mais o primeiro acesso
+        try:
+            candidato = user.perfil_candidato
+            candidato.is_first_access = False
+            candidato.save()
+        except Exception as e:
+            pass # Ignora se for admin
+            
+        return Response({"message": "Senha atualizada com sucesso!"})

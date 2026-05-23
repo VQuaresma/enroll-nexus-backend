@@ -1,4 +1,5 @@
 from django.db import models
+from django.contrib.auth.models import User
 
 class Enrollment(models.Model):
     LEVEL_CHOICES = [
@@ -69,3 +70,30 @@ class Enrollment(models.Model):
 
     def __str__(self):
         return self.full_name
+
+    from django.db import models
+from django.contrib.auth.models import User
+
+class Candidato(models.Model):
+    # O OneToOneField cria a ponte: 1 Candidato = 1 Conta de Login
+    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='perfil_candidato')
+    
+    matricula = models.CharField(max_length=20, unique=True)
+    cpf = models.CharField(max_length=14, unique=True)
+    
+    # A trava de segurança que vamos usar no React depois
+    is_first_access = models.BooleanField(default=True)
+    
+    # Controle de onde ele está no processo
+    status = models.CharField(
+        max_length=30,
+        choices=[
+            ('APROVADO', 'Aprovado no Processo'),
+            ('PRE_MATRICULA', 'Pré-Matrícula Iniciada'),
+            ('CONCLUIDA', 'Matrícula Concluída')
+        ],
+        default='APROVADO'
+    )
+
+    def __str__(self):
+        return f"{self.matricula} - {self.user.first_name}"
