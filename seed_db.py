@@ -10,6 +10,7 @@ from enrollments.models import Enrollment
 
 def seed_data(n=10):
     niveis = ['MESTRADO', 'DOUTORADO']
+    programas = ['PGEDA', 'PPEB'] # <-- Nossos dois programas
     
     nomes = [
         "Vitor Quaresma", "Maria Silva", "João Santos", "Ana Oliveira", 
@@ -21,8 +22,11 @@ def seed_data(n=10):
 
     for i in range(n):
         nome_random = random.choice(nomes) + f" {random.randint(10, 99)}"
-        
+        programa_sorteado = random.choice(programas)
         Enrollment.objects.create(
+
+            # Identificação do Programa
+            program=programa_sorteado, # <-- Salva no banco de dados
             # Dados Pessoais
             full_name=nome_random,
             social_name="",

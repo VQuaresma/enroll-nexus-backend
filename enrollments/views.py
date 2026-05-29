@@ -24,10 +24,23 @@ class EnrollmentCreateView(generics.CreateAPIView):
 
 # 2. View para Listar Inscrições (Usada pelo Dashboard do NEB)
 class EnrollmentListView(generics.ListAPIView):
-    # .order_by('-created_at') faz com que os últimos inscritos apareçam primeiro
-    queryset = Enrollment.objects.all().order_by('-id') 
     serializer_class = EnrollmentSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated] # Garante que só o admin logado veja
+
+    def get_queryset(self):
+        # 1. Pega todas as inscrições aprovadas, da mais recente para a mais antiga
+        queryset = Enrollment.objects.all().order_by('-id') 
+        
+        # 2. Lê o parâmetro 'program' da URL (ex: ?program=PGEDA)
+        programa_url = self.request.query_params.get('program', None)
+        
+        # 3. Se a URL tiver o programa, aplica o filtro na base de dados
+        if programa_url is not None:
+            # O __iexact faz a busca ignorando maiúsculas e minúsculas
+            queryset = queryset.filter(program__iexact=programa_url)
+            
+        # 4. Retorna a lista pronta (já filtrada e ordenada) para o React
+        return queryset
 
 # 1. A View de Login que usa o nosso Serializer customizado
 class LoginCandidatoView(TokenObtainPairView):

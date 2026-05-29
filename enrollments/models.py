@@ -6,10 +6,16 @@ class Enrollment(models.Model):
         ('MESTRADO', 'Mestrado'),
         ('DOUTORADO', 'Doutorado'),
     ]
+
+    PROGRAM_CHOICES = [
+        ('PGEDA', 'PGEDA'),
+        ('PPEB', 'PPEB'),
+    ]
     # --- DADOS PESSOAIS (Existentes + Novos do Doc) ---
     full_name = models.CharField(max_length=255, verbose_name="Nome Completo")
     social_name = models.CharField(max_length=255, null=True, blank=True)
     program_level = models.CharField(max_length=10, choices=LEVEL_CHOICES)
+    program = models.CharField(max_length=10, null=True, blank=True)
     cpf = models.CharField(max_length=14, unique=True)
     date_of_birth = models.DateField()
     rg = models.CharField(max_length=20)
@@ -77,7 +83,7 @@ from django.contrib.auth.models import User
 class Candidato(models.Model):
     # O OneToOneField cria a ponte: 1 Candidato = 1 Conta de Login
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='perfil_candidato')
-    
+    programa = models.CharField(max_length=10, choices=[('PGEDA', 'PGEDA'), ('PPEB', 'PPEB')], default='PGEDA')
     matricula = models.CharField(max_length=20, unique=True)
     cpf = models.CharField(max_length=14, unique=True)
     
