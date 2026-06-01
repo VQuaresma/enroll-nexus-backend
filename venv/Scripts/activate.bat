@@ -8,7 +8,7 @@ if defined _OLD_CODEPAGE (
     "%SystemRoot%\System32\chcp.com" 65001 > nul
 )
 
-set "VIRTUAL_ENV=C:\Users\usuario\Desktop\ufpa cadastro\enroll-nexus-backend\venv"
+set "VIRTUAL_ENV=C:\Users\vitor\OneDrive\Área de Trabalho\registro-ufpa\enroll-nexus-backend\venv"
 
 if not defined PROMPT set PROMPT=$P$G
 

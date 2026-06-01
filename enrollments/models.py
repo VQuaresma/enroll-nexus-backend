@@ -1,53 +1,44 @@
 from django.db import models
 from django.contrib.auth.models import User
 
+
 class Enrollment(models.Model):
     LEVEL_CHOICES = [
         ('MESTRADO', 'Mestrado'),
         ('DOUTORADO', 'Doutorado'),
     ]
-
     PROGRAM_CHOICES = [
         ('PGEDA', 'PGEDA'),
         ('PPEB', 'PPEB'),
     ]
-    # --- DADOS PESSOAIS (Existentes + Novos do Doc) ---
-    full_name = models.CharField(max_length=255, verbose_name="Nome Completo")
+    full_name = models.CharField(max_length=255)
     social_name = models.CharField(max_length=255, null=True, blank=True)
     program_level = models.CharField(max_length=10, choices=LEVEL_CHOICES)
     program = models.CharField(max_length=10, null=True, blank=True)
     cpf = models.CharField(max_length=14, unique=True)
     date_of_birth = models.DateField()
     rg = models.CharField(max_length=20)
-    issuing_body = models.CharField(max_length=50, verbose_name="Órgão Expedidor")
-    dispatch_date = models.DateField(verbose_name="Data de Expedição RG", null=True, blank=True)
-    
-    # Novos campos de Documentação
-    voter_id = models.CharField(max_length=20, verbose_name="Título de Eleitor")
-    voter_zone = models.CharField(max_length=10, verbose_name="Zona")
-    voter_section = models.CharField(max_length=10, verbose_name="Seção")
-    military_id = models.CharField(max_length=50, blank=True, null=True, verbose_name="Certificado Militar")
-    military_date = models.DateField(blank=True, null=True, verbose_name="Data Exp. Militar")
+    issuing_body = models.CharField(max_length=50)
+    dispatch_date = models.DateField(null=True, blank=True)
+    voter_id = models.CharField(max_length=20)
+    voter_zone = models.CharField(max_length=10)
+    voter_section = models.CharField(max_length=10)
+    military_id = models.CharField(max_length=50, blank=True, null=True)
+    military_date = models.DateField(blank=True, null=True)
     military_series = models.CharField(max_length=10, null=True, blank=True)
     military_category = models.CharField(max_length=50, null=True, blank=True)
     military_dispatch_date = models.DateField(null=True, blank=True)
-    
-    # Filiação e Perfil
-    mother_name = models.CharField(max_length=255, verbose_name="Nome da Mãe")
-    father_name = models.CharField(max_length=255, verbose_name="Nome do Pai")
-    gender = models.CharField(max_length=20, verbose_name="Sexo") # MASCULINO / FEMININO
-    marital_status = models.CharField(max_length=50, verbose_name="Estado Civil")
-    race_color = models.CharField(max_length=20, verbose_name="Raça/Cor")
-    
-    # Naturalidade (Exigência UFPA)
-    birth_country = models.CharField(max_length=100, default="Brasil", verbose_name="País")
-    birth_state = models.CharField(max_length=2, verbose_name="UF de Nascimento")
-    birth_city = models.CharField(max_length=100, verbose_name="Município de Nascimento")
-    nationality = models.CharField(max_length=100, verbose_name="Nacionalidade")
-
-    # --- ENDEREÇO E CONTATO ---
+    mother_name = models.CharField(max_length=255)
+    father_name = models.CharField(max_length=255)
+    gender = models.CharField(max_length=20)
+    marital_status = models.CharField(max_length=50)
+    race_color = models.CharField(max_length=20)
+    birth_country = models.CharField(max_length=100, default="Brasil")
+    birth_state = models.CharField(max_length=2)
+    birth_city = models.CharField(max_length=100)
+    nationality = models.CharField(max_length=100)
     email = models.EmailField(unique=True)
-    phone = models.CharField(max_length=20, verbose_name="Celular") # Mantive apenas o Celular
+    phone = models.CharField(max_length=20)
     zip_code = models.CharField(max_length=10)
     street = models.CharField(max_length=255)
     number = models.CharField(max_length=10)
@@ -55,42 +46,29 @@ class Enrollment(models.Model):
     neighbourhood = models.CharField(max_length=100)
     city = models.CharField(max_length=100)
     state = models.CharField(max_length=2)
-
-    # --- PESSOAS DE CONTATO (Emergência no Doc) ---
-    emergency_contact_1 = models.CharField(max_length=255, verbose_name="Contato Próximo 1")
-    emergency_phone_1 = models.CharField(max_length=20, verbose_name="Celular Contato 1")
-    emergency_contact_2 = models.CharField(max_length=255, verbose_name="Contato Próximo 2")
-    emergency_phone_2 = models.CharField(max_length=20, verbose_name="Celular Contato 2")
-
-    # --- FORMAÇÃO E BANCÁRIO (Já simplificados por você) ---
-    institution = models.CharField(max_length=255, verbose_name="Instituição")
-    course = models.CharField(max_length=255, verbose_name="Curso")
-    graduation_year = models.CharField(max_length=4, verbose_name="Ano de Conclusão")
+    emergency_contact_1 = models.CharField(max_length=255)
+    emergency_phone_1 = models.CharField(max_length=20)
+    emergency_contact_2 = models.CharField(max_length=255)
+    emergency_phone_2 = models.CharField(max_length=20)
+    institution = models.CharField(max_length=255)
+    course = models.CharField(max_length=255)
+    graduation_year = models.CharField(max_length=4)
     bank_name = models.CharField(max_length=100)
     agency = models.CharField(max_length=20)
     account_number = models.CharField(max_length=20)
-
-    # Controle
     registration_date = models.DateTimeField(auto_now_add=True)
     status = models.CharField(max_length=10, default='PENDING')
 
     def __str__(self):
         return self.full_name
 
-    from django.db import models
-from django.contrib.auth.models import User
 
 class Candidato(models.Model):
-    # O OneToOneField cria a ponte: 1 Candidato = 1 Conta de Login
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='perfil_candidato')
     programa = models.CharField(max_length=10, choices=[('PGEDA', 'PGEDA'), ('PPEB', 'PPEB')], default='PGEDA')
     matricula = models.CharField(max_length=20, unique=True)
     cpf = models.CharField(max_length=14, unique=True)
-    
-    # A trava de segurança que vamos usar no React depois
     is_first_access = models.BooleanField(default=True)
-    
-    # Controle de onde ele está no processo
     status = models.CharField(
         max_length=30,
         choices=[
@@ -103,3 +81,34 @@ class Candidato(models.Model):
 
     def __str__(self):
         return f"{self.matricula} - {self.user.first_name}"
+
+
+class PeriodoMatricula(models.Model):
+    nome = models.CharField(max_length=100)
+    programa = models.CharField(max_length=10, choices=[('PGEDA', 'PGEDA'), ('PPEB', 'PPEB')])
+    data_abertura = models.DateField()
+    data_fechamento = models.DateField()
+    ativo = models.BooleanField(default=True)
+
+    def __str__(self):
+        return self.nome
+
+
+class CandidatoAprovado(models.Model):
+    periodo = models.ForeignKey(PeriodoMatricula, on_delete=models.CASCADE)
+    nome = models.CharField(max_length=255)
+    cpf = models.CharField(max_length=14)
+    inscricao = models.CharField(max_length=20)
+    email = models.EmailField(blank=True, null=True)
+    status = models.CharField(default='PENDING', max_length=20)
+    user = models.OneToOneField(          # ← campo que estava faltando
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='candidato_aprovado'
+    )
+    is_first_access = models.BooleanField(default=True)
+
+    def __str__(self):
+        return f"{self.inscricao} - {self.nome}"
