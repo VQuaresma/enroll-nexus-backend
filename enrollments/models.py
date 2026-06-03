@@ -112,3 +112,9 @@ class CandidatoAprovado(models.Model):
 
     def __str__(self):
         return f"{self.inscricao} - {self.nome}"
+    
+class DocumentoEnrollment(models.Model):
+    enrollment = models.ForeignKey(Enrollment, on_delete=models.CASCADE, related_name='documentos')
+    tipo = models.CharField(max_length=50)
+    arquivo = models.FileField(upload_to='documentos/%Y/%m/')
+    enviado_em = models.DateTimeField(auto_now_add=True)
