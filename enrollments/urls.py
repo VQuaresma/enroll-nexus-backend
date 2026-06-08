@@ -8,7 +8,9 @@ from .views import (
     PeriodoMatriculaListCreateView,   
     PeriodoMatriculaDetailView,
     EnrollmentStatusUpdateView,   
-    EnrollmentComprovanteView,        
+    EnrollmentComprovanteView,     
+    EnrollmentDocumentosView,
+    ComprovanteDataView,   
 )
 
 urlpatterns = [
@@ -21,9 +23,11 @@ urlpatterns = [
 
     path('<int:pk>/status/', EnrollmentStatusUpdateView.as_view(), name='enrollment-status'),        
     path('<int:pk>/comprovante/', EnrollmentComprovanteView.as_view(), name='enrollment-comprovante'), 
+    path('<int:pk>/documentos/', EnrollmentDocumentosView.as_view(), name='enrollment-documentos'),
 
     path('periodos/', PeriodoMatriculaListCreateView.as_view(), name='periodos-list'),       
     path('periodos/<int:pk>/', PeriodoMatriculaDetailView.as_view(), name='periodos-detail'),
 
+    path('<int:pk>/comprovante-dados/', ComprovanteDataView.as_view(), name='comprovante-dados'),
    
 ]
