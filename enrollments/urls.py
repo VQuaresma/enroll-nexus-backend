@@ -10,7 +10,9 @@ from .views import (
     EnrollmentStatusUpdateView,   
     EnrollmentComprovanteView,     
     EnrollmentDocumentosView,
-    ComprovanteDataView,   
+    ComprovanteDataView,
+    CandidatoSituacaoView,
+    EnrollmentDetailView,
 )
 
 urlpatterns = [
@@ -30,4 +32,8 @@ urlpatterns = [
 
     path('<int:pk>/comprovante-dados/', ComprovanteDataView.as_view(), name='comprovante-dados'),
    
+
+   path('candidato/situacao/', CandidatoSituacaoView.as_view(), name='candidato-situacao'),
+
+   path('<int:pk>/', EnrollmentDetailView.as_view(), name='enrollment-detail'),
 ]

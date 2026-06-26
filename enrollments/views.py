@@ -11,6 +11,7 @@ from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import A4
 
 from rest_framework import generics, status
+from rest_framework.generics import RetrieveAPIView, ListAPIView
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework.parsers import MultiPartParser, FormParser
@@ -281,6 +282,22 @@ class EnrollmentDocumentosView(APIView):
     permission_classes = [IsAuthenticated]
     parser_classes = [MultiPartParser, FormParser]
 
+    def get(self, request, pk):  # ← adicione este método
+        candidato = CandidatoAprovado.objects.filter(pk=pk).first()
+        if not candidato:
+            return Response({'erro': 'Candidato não encontrado.'}, status=404)
+
+        documentos = candidato.documentos.all()
+        return Response([
+            {
+                'id': d.id,
+                'tipo': d.tipo,
+                'url': request.build_absolute_uri(d.arquivo.url),
+                'enviado_em': d.enviado_em,
+            }
+            for d in documentos
+        ])
+
     def post(self, request, pk):
         candidato = CandidatoAprovado.objects.filter(pk=pk).first()
         if not candidato:
@@ -359,3 +376,38 @@ class ComprovanteDataView(APIView):
             'account_number': candidato.account_number,
             'status': candidato.status,
         })
+    
+class CandidatoSituacaoView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        try:
+            candidato = request.user.candidato_aprovado
+        except CandidatoAprovado.DoesNotExist:
+            return Response({'erro': 'Candidato não encontrado.'}, status=404)
+
+        status_map = {
+            'PENDING':    'PENDING',
+            'ANDAMENTO':  'ANDAMENTO',
+            'AGUARDANDO': 'AGUARDANDO',
+            'APROVADO':   'APROVADO',
+            'REJEITADO':  'REJEITADO',
+        }
+
+        return Response({
+            'status':             status_map.get(candidato.status.upper(), 'PENDING'),
+            'formulario_enviado': candidato.formulario_enviado,
+            'nome':               candidato.nome,
+            'programa':           candidato.periodo.programa if candidato.periodo else '',
+            'periodo_titulo':     candidato.periodo.nome if candidato.periodo else None,
+            'periodo_inicio':     str(candidato.periodo.data_abertura) if candidato.periodo else None,
+            'periodo_fim':        str(candidato.periodo.data_fechamento) if candidato.periodo else None,
+        })
+    
+class EnrollmentDetailView(RetrieveAPIView):
+    queryset = CandidatoAprovado.objects.all()
+    serializer_class = CandidatoAprovadoSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_serializer_context(self):
+        return {'request': self.request}
