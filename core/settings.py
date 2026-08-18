@@ -106,7 +106,7 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:8080",
     "http://127.0.0.1:8080",
-    # "https://seu-frontend-no-render.onrender.com" <- Descomente e coloque a URL real depois
+    "https://ufpa-enroll-nexus.vitorquaresmadasilva.workers.dev"
 ]
 
 REST_FRAMEWORK = {
