@@ -5,7 +5,7 @@ import os
 import threading
 import time
 
-from django.http import FileResponse
+from django.http import FileResponse, Http404
 from django.contrib.auth.models import User
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import A4
@@ -15,15 +15,22 @@ from rest_framework.generics import RetrieveAPIView, ListAPIView
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework.parsers import MultiPartParser, FormParser
-from rest_framework.permissions import IsAuthenticated, AllowAny
+from rest_framework.permissions import AllowAny
+from core.permissions import IsAdmin, IsCandidate, IsCandidateOrAdminReadOnly, is_admin
+from configuracoes.models import AdminProfile
 
 from .models import PeriodoMatricula, CandidatoAprovado, DocumentoCandidato
 from .serializers import CandidatoAprovadoSerializer, LoginCandidatoSerializer, PeriodoMatriculaSerializer
 
 
+def visible_candidates(user):
+    queryset = CandidatoAprovado.objects.select_related('periodo')
+    return queryset if is_admin(user) else queryset.filter(user=user)
+
+
 # ── 1. Submeter formulário (PATCH no próprio CandidatoAprovado) ───────────────
 class EnrollmentCreateView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsCandidate]
 
     def post(self, request):
         try:
@@ -41,8 +48,6 @@ class EnrollmentCreateView(APIView):
             candidato, data=request.data, partial=True
         )
         if not serializer.is_valid():
-            print("\n❌ ERRO DE VALIDAÇÃO NO DJANGO:")
-            print(serializer.errors)
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
         serializer.save(formulario_enviado=True, status='AGUARDANDO')
@@ -52,7 +57,7 @@ class EnrollmentCreateView(APIView):
 # ── 2. Listar candidatos para o admin ─────────────────────────────────────────
 class EnrollmentListView(generics.ListAPIView):
     serializer_class = CandidatoAprovadoSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAdmin]
 
     def get_queryset(self):
         qs = CandidatoAprovado.objects.prefetch_related('documentos').order_by('-id')
@@ -70,18 +75,20 @@ class LoginCandidatoView(APIView):
         serializer = LoginCandidatoSerializer(data=request.data)
         if serializer.is_valid():
             return Response(serializer.validated_data)
-        print(f"Erro de validação: {serializer.errors}")
         return Response(serializer.errors, status=400)
 
 
 # ── 4. Trocar senha ───────────────────────────────────────────────────────────
 class TrocarSenhaView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsCandidate]
 
     def post(self, request):
         user = request.user
         senha_atual = request.data.get('senha_atual')
         nova_senha = request.data.get('nova_senha')
+
+        if not isinstance(senha_atual, str) or not isinstance(nova_senha, str) or not nova_senha:
+            return Response({'error': 'Informe a senha atual e a nova senha.'}, status=400)
 
         if not user.check_password(senha_atual):
             return Response({"error": "A senha atual está incorreta."}, status=400)
@@ -101,7 +108,7 @@ class TrocarSenhaView(APIView):
 
 # ── 5. Importar CSV e criar período ───────────────────────────────────────────
 class ImportarCandidatosView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAdmin]
     parser_classes = [MultiPartParser, FormParser]
 
     def post(self, request):
@@ -148,6 +155,14 @@ class ImportarCandidatosView(APIView):
                     erros.append(f"Linha {i}: nome e cpf são obrigatórios")
                     continue
 
+                if not inscricao:
+                    erros.append(f'Linha {i}: inscrição é obrigatória')
+                    continue
+                if (User.objects.filter(username=inscricao).exists()
+                        or CandidatoAprovado.objects.filter(inscricao=inscricao).exists()):
+                    erros.append(f'Linha {i}: inscrição já vinculada a uma conta ou candidato')
+                    continue
+
                 candidato = CandidatoAprovado.objects.create(
                     periodo=periodo,
                     nome=nome,
@@ -158,12 +173,7 @@ class ImportarCandidatosView(APIView):
                 )
 
                 # Usa inscricao como username (login) e CPF como senha inicial
-                user = User.objects.filter(username=inscricao).first()
-                if not user:
-                    user = User.objects.create_user(username=inscricao, password=cpf)
-                else:
-                    user.set_password(cpf)
-                    user.save()
+                user = User.objects.create_user(username=inscricao, password=cpf)
 
                 candidato.user = user
                 candidato.save()
@@ -188,7 +198,7 @@ class ImportarCandidatosView(APIView):
 # ── 6. Listar/criar períodos ──────────────────────────────────────────────────
 class PeriodoMatriculaListCreateView(generics.ListCreateAPIView):
     serializer_class = PeriodoMatriculaSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAdmin]
 
     def get_queryset(self):
         qs = PeriodoMatricula.objects.all().order_by('-id')
@@ -202,13 +212,13 @@ class PeriodoMatriculaListCreateView(generics.ListCreateAPIView):
 class PeriodoMatriculaDetailView(generics.RetrieveUpdateAPIView):
     queryset = PeriodoMatricula.objects.all()
     serializer_class = PeriodoMatriculaSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAdmin]
     # RetrieveUpdateAPIView — sem DestroyAPIView, períodos não podem ser excluídos
 
 
 # ── 8. Atualizar status do candidato ──────────────────────────────────────────
 class EnrollmentStatusUpdateView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAdmin]
 
     def patch(self, request, pk):
         candidato = CandidatoAprovado.objects.filter(pk=pk).first()
@@ -223,10 +233,10 @@ class EnrollmentStatusUpdateView(APIView):
 
 # ── 9. Gerar comprovante PDF ──────────────────────────────────────────────────
 class EnrollmentComprovanteView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsCandidateOrAdminReadOnly]
 
     def get(self, request, pk):
-        candidato = CandidatoAprovado.objects.filter(pk=pk).first()
+        candidato = visible_candidates(request.user).filter(pk=pk).first()
         if not candidato:
             return Response({'erro': 'Candidato não encontrado.'}, status=404)
 
@@ -279,11 +289,11 @@ class EnrollmentComprovanteView(APIView):
 
 # ── 10. Upload de documentos PDF ──────────────────────────────────────────────
 class EnrollmentDocumentosView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsCandidateOrAdminReadOnly]
     parser_classes = [MultiPartParser, FormParser]
 
     def get(self, request, pk):  # ← adicione este método
-        candidato = CandidatoAprovado.objects.filter(pk=pk).first()
+        candidato = visible_candidates(request.user).filter(pk=pk).first()
         if not candidato:
             return Response({'erro': 'Candidato não encontrado.'}, status=404)
 
@@ -299,7 +309,7 @@ class EnrollmentDocumentosView(APIView):
         ])
 
     def post(self, request, pk):
-        candidato = CandidatoAprovado.objects.filter(pk=pk).first()
+        candidato = visible_candidates(request.user).filter(pk=pk).first()
         if not candidato:
             return Response({'erro': 'Candidato não encontrado.'}, status=404)
 
@@ -321,10 +331,10 @@ class EnrollmentDocumentosView(APIView):
         return Response({'salvos': salvos}, status=201)
     
 class ComprovanteDataView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsCandidateOrAdminReadOnly]
 
     def get(self, request, pk):
-        candidato = CandidatoAprovado.objects.filter(pk=pk).first()
+        candidato = visible_candidates(request.user).filter(pk=pk).first()
         if not candidato:
             return Response({'erro': 'Não encontrado'}, status=404)
 
@@ -378,7 +388,7 @@ class ComprovanteDataView(APIView):
         })
     
 class CandidatoSituacaoView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsCandidate]
 
     def get(self, request):
         try:
@@ -405,9 +415,34 @@ class CandidatoSituacaoView(APIView):
         })
     
 class EnrollmentDetailView(RetrieveAPIView):
-    queryset = CandidatoAprovado.objects.all()
     serializer_class = CandidatoAprovadoSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsCandidateOrAdminReadOnly]
+
+    def get_queryset(self):
+        return visible_candidates(self.request.user)
 
     def get_serializer_context(self):
         return {'request': self.request}
+
+
+class DocumentoArquivoView(APIView):
+    permission_classes = [IsCandidateOrAdminReadOnly]
+
+    def get(self, request, path):
+        # Look up a registered file; never resolve a client-supplied filesystem path.
+        documento = DocumentoCandidato.objects.filter(
+            arquivo=path, candidato__in=visible_candidates(request.user)
+        ).first()
+        arquivo = documento.arquivo if documento else None
+        if arquivo is None and is_admin(request.user):
+            profile = AdminProfile.objects.filter(foto=path).first()
+            arquivo = profile.foto if profile else None
+        if not arquivo:
+            raise Http404
+        try:
+            response = FileResponse(arquivo.open('rb'), filename=os.path.basename(arquivo.name))
+        except FileNotFoundError:
+            raise Http404
+        response['Cache-Control'] = 'private, no-store'
+        response['X-Content-Type-Options'] = 'nosniff'
+        return response

@@ -1,7 +1,9 @@
 import secrets, string
 from rest_framework.views import APIView
 from rest_framework.response import Response
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import SAFE_METHODS
+from rest_framework_simplejwt.views import TokenObtainPairView
+from core.permissions import IsAdmin, IsSuperAdmin
 from django.contrib.auth.models import User
 from django.contrib.auth import update_session_auth_hash
 
@@ -10,18 +12,23 @@ from .serializers import (
     AdminProfileSerializer, AlterarSenhaSerializer,
     AdminUsuarioSerializer, ConvidarAdminSerializer,
     ParametrosSistemaSerializer,
+    AdminTokenObtainPairSerializer,
 )
 
 
+class AdminTokenObtainPairView(TokenObtainPairView):
+    serializer_class = AdminTokenObtainPairSerializer
+
+
 class PerfilView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAdmin]
 
     def get(self, request):
         profile, _ = AdminProfile.objects.get_or_create(user=request.user)
         return Response(AdminProfileSerializer(profile).data)
 
     def patch(self, request):
-        profile, _ = AdminProfile.objects.get_or_create(user=request.user)
+        profile = AdminProfile.objects.filter(user=request.user).first() or AdminProfile(user=request.user)
         serializer = AdminProfileSerializer(profile, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
         serializer.save()
@@ -29,7 +36,7 @@ class PerfilView(APIView):
 
 
 class AlterarSenhaView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAdmin]
 
     def post(self, request):
         serializer = AlterarSenhaSerializer(data=request.data)
@@ -45,7 +52,9 @@ class AlterarSenhaView(APIView):
 
 
 class AdminUsuariosView(APIView):
-    permission_classes = [IsAuthenticated]
+    def get_permissions(self):
+        permission = IsAdmin if self.request.method in SAFE_METHODS else IsSuperAdmin
+        return [permission()]
 
     def get(self, request):
         admins = User.objects.filter(is_staff=True).select_related('admin_profile')
@@ -56,7 +65,8 @@ class AdminUsuariosView(APIView):
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
 
-        if User.objects.filter(email=data['email']).exists():
+        if (User.objects.filter(email=data['email']).exists()
+                or User.objects.filter(username=data['email']).exists()):
             return Response({'email': 'Já existe um usuário com este e-mail.'}, status=400)
 
         temp_password = ''.join(
@@ -76,14 +86,16 @@ class AdminUsuariosView(APIView):
 
 
 class AdminUsuarioDetailView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsSuperAdmin]
 
     def patch(self, request, user_id):
         try:
-            profile = AdminProfile.objects.get(user_id=user_id)
+            profile = AdminProfile.objects.get(user_id=user_id, user__is_staff=True)
         except AdminProfile.DoesNotExist:
             return Response({'detail': 'Usuário não encontrado.'}, status=404)
 
+        if set(request.data) - {'role'}:
+            return Response({'detail': 'Somente o papel pode ser alterado nesta operação.'}, status=400)
         role = request.data.get('role')
         if role not in dict(AdminProfile.Role.choices):
             return Response({'detail': 'Role inválido.'}, status=400)
@@ -107,13 +119,13 @@ class AdminUsuarioDetailView(APIView):
 
 
 class ParametrosView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAdmin]
 
     def get(self, request):
         return Response(ParametrosSistemaSerializer(ParametrosSistema.get()).data)
 
     def patch(self, request):
-        params = ParametrosSistema.get()
+        params = ParametrosSistema.objects.filter(pk=1).first() or ParametrosSistema(pk=1)
         serializer = ParametrosSistemaSerializer(params, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
         serializer.save()

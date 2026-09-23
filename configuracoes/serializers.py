@@ -1,9 +1,33 @@
 from rest_framework import serializers
 from django.contrib.auth.models import User
 from .models import AdminProfile, ParametrosSistema
+from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
+from rest_framework.exceptions import AuthenticationFailed
+from core.permissions import is_admin
 
 
-class AdminProfileSerializer(serializers.ModelSerializer):
+class AdminTokenObtainPairSerializer(TokenObtainPairSerializer):
+    def validate(self, attrs):
+        data = super().validate(attrs)
+        if not is_admin(self.user):
+            raise AuthenticationFailed('Dados inválidos.')
+        return data
+
+
+class RejectProtectedFieldsMixin:
+    protected_fields = {'user', 'user_id', 'role', 'is_staff', 'is_superuser', 'is_active', 'password'}
+
+    def to_internal_value(self, data):
+        forbidden = self.protected_fields.intersection(data)
+        if forbidden:
+            raise serializers.ValidationError({
+                field: 'Este campo não pode ser alterado nesta operação.'
+                for field in sorted(forbidden)
+            })
+        return super().to_internal_value(data)
+
+
+class AdminProfileSerializer(RejectProtectedFieldsMixin, serializers.ModelSerializer):
     username   = serializers.CharField(source='user.username', read_only=True)
     email      = serializers.EmailField(source='user.email')
     first_name = serializers.CharField(source='user.first_name')
@@ -12,6 +36,7 @@ class AdminProfileSerializer(serializers.ModelSerializer):
     class Meta:
         model  = AdminProfile
         fields = ['username', 'email', 'first_name', 'last_name', 'role', 'foto']
+        read_only_fields = ['role']
 
     def update(self, instance, validated_data):
         user_data = validated_data.pop('user', {})
@@ -40,14 +65,15 @@ class AdminUsuarioSerializer(serializers.ModelSerializer):
         fields = ['id', 'username', 'email', 'first_name', 'last_name', 'role', 'is_active']
 
 
-class ConvidarAdminSerializer(serializers.Serializer):
+class ConvidarAdminSerializer(RejectProtectedFieldsMixin, serializers.Serializer):
+    protected_fields = RejectProtectedFieldsMixin.protected_fields - {'role'}
     email      = serializers.EmailField()
     first_name = serializers.CharField()
     last_name  = serializers.CharField()
     role       = serializers.ChoiceField(choices=AdminProfile.Role.choices)
 
 
-class ParametrosSistemaSerializer(serializers.ModelSerializer):
+class ParametrosSistemaSerializer(RejectProtectedFieldsMixin, serializers.ModelSerializer):
     class Meta:
         model  = ParametrosSistema
         fields = '__all__'

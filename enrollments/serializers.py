@@ -1,7 +1,7 @@
 from rest_framework import serializers
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.contrib.auth.models import User
-from django.contrib.auth.hashers import make_password
+from django.db import transaction
 from .models import CandidatoAprovado, PeriodoMatricula, DocumentoCandidato
 
 
@@ -22,6 +22,11 @@ class DocumentoSerializer(serializers.ModelSerializer):
 
 # ── Candidato (modelo unificado) ──────────────────────────────────────────────
 class CandidatoAprovadoSerializer(serializers.ModelSerializer):
+    protected_fields = {
+        'id', 'user', 'user_id', 'periodo', 'periodo_id', 'inscricao', 'status',
+        'formulario_enviado', 'is_first_access', 'criado_em', 'created_at',
+        'role', 'is_staff', 'is_superuser',
+    }
     documentos = DocumentoSerializer(many=True, read_only=True)
     # Expõe o programa do período para o frontend
     programa = serializers.SerializerMethodField()
@@ -33,6 +38,10 @@ class CandidatoAprovadoSerializer(serializers.ModelSerializer):
     class Meta:
         model = CandidatoAprovado
         fields = '__all__'
+        read_only_fields = (
+            'user', 'periodo', 'inscricao', 'status', 'formulario_enviado',
+            'is_first_access', 'criado_em',
+        )
         extra_kwargs = {
             # Campos do CSV — não obrigatórios no PATCH do formulário
             'nome':      {'required': False},
@@ -41,6 +50,14 @@ class CandidatoAprovadoSerializer(serializers.ModelSerializer):
             'periodo':   {'required': False},
             'status':    {'required': False},
         }
+
+    def to_internal_value(self, data):
+        forbidden = self.protected_fields.intersection(data)
+        if forbidden:
+            raise serializers.ValidationError({
+                field: 'Este campo é controlado pelo servidor.' for field in sorted(forbidden)
+            })
+        return super().to_internal_value(data)
 
     def get_programa(self, obj):
         return obj.periodo.programa if obj.periodo else None
@@ -51,24 +68,25 @@ class LoginCandidatoSerializer(serializers.Serializer):
     inscricao = serializers.CharField()
     senha = serializers.CharField()
 
+    @transaction.atomic
     def validate(self, attrs):
         inscricao = str(attrs.get('inscricao', '')).strip()
         senha = str(attrs.get('senha', '')).strip()
 
-        candidato = CandidatoAprovado.objects.filter(inscricao=inscricao).first()
+        candidato = CandidatoAprovado.objects.select_for_update().filter(inscricao=inscricao).first()
         if not candidato:
             raise serializers.ValidationError("Dados inválidos.")
 
-        user, criado = User.objects.get_or_create(
-            username=inscricao,
-            defaults={'password': make_password(candidato.cpf)}
-        )
-
-        if criado or candidato.user is None:
+        user = candidato.user
+        if user is None:
+            # Never adopt an existing account just because its username matches an import.
+            if User.objects.filter(username=inscricao).exists() or senha != candidato.cpf:
+                raise serializers.ValidationError("Dados inválidos.")
+            user = User.objects.create_user(username=inscricao, password=senha)
             candidato.user = user
-            candidato.save()
+            candidato.save(update_fields=['user'])
 
-        if not user.check_password(senha):
+        if not user.is_active or user.is_staff or user.is_superuser or not user.check_password(senha):
             raise serializers.ValidationError("Dados inválidos.")
 
         refresh = RefreshToken.for_user(user)
