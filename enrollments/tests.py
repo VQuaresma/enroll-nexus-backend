@@ -1,4 +1,6 @@
 from datetime import timedelta
+import json
+from unittest.mock import patch
 
 from django.contrib.auth.models import User
 from django.core.files.uploadedfile import SimpleUploadedFile
@@ -7,11 +9,127 @@ from django.utils import timezone
 from rest_framework.test import APITestCase
 from rest_framework_simplejwt.tokens import AccessToken, RefreshToken
 
-from configuracoes.models import AdminProfile
+from configuracoes.models import AdminProfile, ParametrosSistema
 from .models import CandidatoAprovado, DocumentoCandidato, PeriodoMatricula
 
 
 class EnrollmentAuthTests(APITestCase):
+    def submission_data(self):
+        return {
+            'full_name': 'Candidato Atualizado', 'cpf': '52998224725',
+            'date_of_birth': '1990-01-01', 'dispatch_date': '2015-01-01',
+            'program_level': 'MESTRADO', 'email': 'candidate@example.test',
+            'phone': '91999999999', 'emergency_contact_1': 'Contato Um',
+            'emergency_phone_1': '91999999998', 'emergency_contact_2': 'Contato Dois',
+            'emergency_phone_2': '91999999997', 'zip_code': '66000000',
+            'street': 'Rua de Teste', 'number': '1', 'neighbourhood': 'Centro',
+            'city': 'Belem', 'state': 'PA', 'institution': 'Instituicao Teste',
+            'course': 'Educacao', 'graduation_year': '2020',
+            'lattes_url': 'https://example.test/curriculo', 'research_area': 'Educacao',
+            'bank_name': 'Banco Teste', 'compe_code': '001', 'agency': '1234',
+            'account_number': '12345', 'bank_account_type': 'CC',
+            'military_dispatch_date': None,
+        }
+
+    def test_incomplete_submission_does_not_finalize(self):
+        self.authenticate(self.owner)
+        response = self.client.post('/api/enrollments/submit/', {}, format='json')
+        self.assertEqual(response.status_code, 400)
+        self.candidate.refresh_from_db()
+        self.assertFalse(self.candidate.formulario_enviado)
+
+    def test_submission_rejects_invalid_personal_and_bank_fields(self):
+        self.authenticate(self.owner)
+        for field, value in [('cpf', '00000000000'), ('date_of_birth', '2099-01-01'),
+                             ('program_level', 'INVALID'), ('bank_account_type', 'INVALID'),
+                             ('compe_code', 'abc'), ('graduation_year', '2099')]:
+            data = {**self.submission_data(), field: value}
+            response = self.client.post('/api/enrollments/submit/', data, format='json')
+            self.assertEqual(response.status_code, 400)
+            self.assertIn(field, response.data)
+        self.candidate.refresh_from_db()
+        self.assertFalse(self.candidate.formulario_enviado)
+
+    def test_closed_registrations_do_not_finalize_candidate(self):
+        ParametrosSistema.objects.create(aceitar_novas_inscricoes=False)
+        self.authenticate(self.owner)
+        self.assertEqual(self.client.post('/api/enrollments/submit/', {}, format='json').status_code, 400)
+        self.candidate.refresh_from_db()
+        self.assertFalse(self.candidate.formulario_enviado)
+
+    def test_import_respects_configured_capacity(self):
+        ParametrosSistema.objects.create(max_candidatos_por_periodo=1)
+        self.authenticate(self.admin)
+        count = PeriodoMatricula.objects.count()
+        response = self.import_csv('nome,cpf,inscricao\nTeste A,12345678901,cap-a\nTeste B,12345678902,cap-b')
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(PeriodoMatricula.objects.count(), count)
+
+    def test_invalid_status_never_changes_record(self):
+        self.authenticate(self.admin)
+        for value in [None, 2, '', 'INVALID']:
+            self.assertEqual(self.client.patch(self.candidate_url('status/'), {'status': value}, format='json').status_code, 400)
+        self.candidate.refresh_from_db()
+        self.assertEqual(self.candidate.status, 'PENDING')
+
+    def test_csv_errors_do_not_create_empty_periods_or_users(self):
+        self.authenticate(self.admin)
+        counts = (PeriodoMatricula.objects.count(), User.objects.count())
+        for text in ['', 'wrong,headers\nfoo,bar', 'nome,cpf,inscricao\nNome,,']:
+            self.assertEqual(self.import_csv(text).status_code, 400)
+            self.assertEqual((PeriodoMatricula.objects.count(), User.objects.count()), counts)
+
+    def test_csv_database_failure_rolls_back_new_accounts_and_period(self):
+        self.authenticate(self.admin)
+        counts = (PeriodoMatricula.objects.count(), User.objects.count())
+        with patch('enrollments.views.CandidatoAprovado.objects.create', side_effect=RuntimeError('simulated storage failure')):
+            with self.assertRaises(RuntimeError):
+                self.import_csv('nome,cpf,inscricao\nTeste,12345678901,rollback')
+        self.assertEqual((PeriodoMatricula.objects.count(), User.objects.count()), counts)
+
+    def test_period_rejects_reversed_dates_including_patch(self):
+        self.authenticate(self.admin)
+        response = self.client.patch(f'/api/enrollments/periodos/{self.period.pk}/', {'data_fim': '2025-01-01'}, format='json')
+        self.assertEqual(response.status_code, 400)
+        response = self.client.post('/api/enrollments/periodos/', {
+            'titulo': 'Inválido', 'programa': 'PPEB', 'data_inicio': '2026-12-31', 'data_fim': '2026-01-01',
+        }, format='json')
+        self.assertEqual(response.status_code, 400)
+
+    def test_multipart_submission_validates_files_before_finalizing(self):
+        self.authenticate(self.owner)
+        data = {**self.submission_data(), 'military_dispatch_date': ''}
+        invalid = SimpleUploadedFile('bad.pdf', b'not a PDF')
+        response = self.client.post('/api/enrollments/submit/', {'payload': json.dumps(data), 'cpf': invalid}, format='multipart')
+        self.assertEqual(response.status_code, 400)
+        self.candidate.refresh_from_db()
+        self.assertFalse(self.candidate.formulario_enviado)
+        valid = SimpleUploadedFile('good.pdf', b'%PDF-1.4 example')
+        response = self.client.post('/api/enrollments/submit/', {'payload': json.dumps(data), 'cpf': valid}, format='multipart')
+        self.assertEqual(response.status_code, 200)
+        self.candidate.refresh_from_db()
+        self.assertTrue(self.candidate.formulario_enviado)
+        self.assertIsNone(self.candidate.military_dispatch_date)
+        self.assertTrue(self.candidate.documentos.filter(tipo='cpf').exists())
+
+    def test_password_whitespace_is_significant(self):
+        self.owner.set_password(' password with spaces ')
+        self.owner.save()
+        response = self.client.post('/api/enrollments/candidato/login/', {
+            'inscricao': self.owner.username, 'senha': ' password with spaces ',
+        }, format='json')
+        self.assertEqual(response.status_code, 200)
+
+    @override_settings(AUTH_PASSWORD_VALIDATORS=[{'NAME': 'django.contrib.auth.password_validation.MinimumLengthValidator'}])
+    def test_candidate_password_change_uses_django_validators(self):
+        self.authenticate(self.owner)
+        response = self.client.post('/api/enrollments/candidato/trocar-senha/', {
+            'senha_atual': 'candidate-password', 'nova_senha': 'abc',
+        }, format='json')
+        self.assertEqual(response.status_code, 400)
+        self.owner.refresh_from_db()
+        self.assertTrue(self.owner.check_password('candidate-password'))
+
     def setUp(self):
         self.period = PeriodoMatricula.objects.create(
             nome='Periodo de teste', programa='PPEB',
@@ -33,6 +151,11 @@ class EnrollmentAuthTests(APITestCase):
             candidato=self.candidate, tipo='rg',
             arquivo=SimpleUploadedFile('test.pdf', b'%PDF-1.4 test document', content_type='application/pdf'),
         )
+        for tipo in ['diploma', 'historico', 'cpf', 'titulo', 'comp_votacao', 'comp_residencia']:
+            DocumentoCandidato.objects.create(
+                candidato=self.candidate, tipo=tipo,
+                arquivo=SimpleUploadedFile(f'{tipo}.pdf', b'%PDF-1.4 test', content_type='application/pdf'),
+            )
 
     def authenticate(self, user):
         token = str(RefreshToken.for_user(user).access_token)
@@ -44,10 +167,7 @@ class EnrollmentAuthTests(APITestCase):
 
     def test_submit_enrollment_success(self):
         self.authenticate(self.owner)
-        response = self.client.post('/api/enrollments/submit/', {
-            'full_name': 'Candidato Atualizado', 'email': 'candidate@example.test',
-            'program_level': 'MESTRADO', 'military_dispatch_date': None,
-        }, format='json')
+        response = self.client.post('/api/enrollments/submit/', self.submission_data(), format='json')
         self.assertEqual(response.status_code, 200)
         self.candidate.refresh_from_db()
         self.other_candidate.refresh_from_db()
@@ -169,8 +289,7 @@ class EnrollmentAuthTests(APITestCase):
             with self.subTest(account=user.username):
                 original_password = user.password
                 response = self.import_csv(f'nome,cpf,inscricao,email\nDuplicado,00000000003,{user.username},duplicate@example.test\n')
-                self.assertEqual(response.status_code, 201)
-                self.assertEqual(response.data['candidatos_importados'], 0)
+                self.assertEqual(response.status_code, 400)
                 self.assertTrue(response.data['erros'])
                 user.refresh_from_db()
                 self.assertEqual(user.password, original_password)

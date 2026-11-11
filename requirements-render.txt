@@ -1,0 +1,13 @@
+# Runtime dependencies imported by Django and its installed applications.
+Django==5.2.14
+django-cors-headers==4.9.0
+django-environ==0.11.2
+djangorestframework==3.17.1
+djangorestframework_simplejwt==5.5.1
+dj-database-url==3.1.2
+gunicorn==27.0.0
+psycopg2-binary>=2.9.9
+PyJWT==2.12.1
+pillow>=11.0.0
+reportlab==4.5.1
+whitenoise>=6.9,<7

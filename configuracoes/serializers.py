@@ -1,5 +1,6 @@
 from rest_framework import serializers
 from django.contrib.auth.models import User
+from django.contrib.auth.password_validation import validate_password
 from .models import AdminProfile, ParametrosSistema
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from rest_framework.exceptions import AuthenticationFailed
@@ -28,6 +29,11 @@ class RejectProtectedFieldsMixin:
 
 
 class AdminProfileSerializer(RejectProtectedFieldsMixin, serializers.ModelSerializer):
+    role = serializers.SerializerMethodField()
+
+    def get_role(self, obj):
+        return "super_admin" if obj.user.is_superuser else obj.role
+
     username   = serializers.CharField(source='user.username', read_only=True)
     email      = serializers.EmailField(source='user.email')
     first_name = serializers.CharField(source='user.first_name')
@@ -47,13 +53,14 @@ class AdminProfileSerializer(RejectProtectedFieldsMixin, serializers.ModelSerial
 
 
 class AlterarSenhaSerializer(serializers.Serializer):
-    senha_atual      = serializers.CharField()
-    nova_senha       = serializers.CharField(min_length=8)
-    confirmar_senha  = serializers.CharField()
+    senha_atual      = serializers.CharField(trim_whitespace=False)
+    nova_senha       = serializers.CharField(min_length=8, trim_whitespace=False)
+    confirmar_senha  = serializers.CharField(trim_whitespace=False)
 
     def validate(self, data):
         if data['nova_senha'] != data['confirmar_senha']:
             raise serializers.ValidationError("As senhas não coincidem.")
+        validate_password(data['nova_senha'], self.context['request'].user)
         return data
 
 
@@ -74,6 +81,9 @@ class ConvidarAdminSerializer(RejectProtectedFieldsMixin, serializers.Serializer
 
 
 class ParametrosSistemaSerializer(RejectProtectedFieldsMixin, serializers.ModelSerializer):
+    max_candidatos_por_periodo = serializers.IntegerField(min_value=1)
+    candidatos_por_pagina = serializers.IntegerField(min_value=1)
+
     class Meta:
         model  = ParametrosSistema
         fields = '__all__'

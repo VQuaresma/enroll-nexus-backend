@@ -1,12 +1,14 @@
 import csv
 import io
-import tempfile
+import json
 import os
-import threading
-import time
 
 from django.http import FileResponse, Http404
 from django.contrib.auth.models import User
+from django.contrib.auth.password_validation import validate_password
+from django.core.exceptions import ValidationError as DjangoValidationError
+from django.db import transaction
+from rest_framework.exceptions import ValidationError
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import A4
 
@@ -17,7 +19,7 @@ from rest_framework.views import APIView
 from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework.permissions import AllowAny
 from core.permissions import IsAdmin, IsCandidate, IsCandidateOrAdminReadOnly, is_admin
-from configuracoes.models import AdminProfile
+from configuracoes.models import AdminProfile, ParametrosSistema
 
 from .models import PeriodoMatricula, CandidatoAprovado, DocumentoCandidato
 from .serializers import CandidatoAprovadoSerializer, LoginCandidatoSerializer, PeriodoMatriculaSerializer
@@ -28,13 +30,34 @@ def visible_candidates(user):
     return queryset if is_admin(user) else queryset.filter(user=user)
 
 
+DOCUMENT_TYPES = {'diploma', 'historico', 'rg', 'cpf', 'titulo', 'comp_votacao', 'comp_residencia', 'reservista'}
+REQUIRED_DOCUMENT_TYPES = DOCUMENT_TYPES - {'reservista'}
+
+
+def validate_documents(files):
+    if set(files) - DOCUMENT_TYPES:
+        raise ValidationError({'arquivos': 'Tipo de documento desconhecido.'})
+    for tipo, arquivo in files.items():
+        header = arquivo.read(5)
+        arquivo.seek(0)
+        if arquivo.size > 10 * 1024 * 1024 or header != b'%PDF-':
+            raise ValidationError({tipo: 'Envie um PDF de até 10 MB.'})
+
+
+def save_documents(candidato, files):
+    # Keep previous files: uploads never delete historical documents.
+    for tipo, arquivo in files.items():
+        DocumentoCandidato.objects.create(candidato=candidato, tipo=tipo, arquivo=arquivo)
+
+
 # ── 1. Submeter formulário (PATCH no próprio CandidatoAprovado) ───────────────
 class EnrollmentCreateView(APIView):
     permission_classes = [IsCandidate]
 
+    @transaction.atomic
     def post(self, request):
         try:
-            candidato = request.user.candidato_aprovado
+            candidato = CandidatoAprovado.objects.select_for_update().get(user=request.user)
         except CandidatoAprovado.DoesNotExist:
             return Response({'erro': 'Candidato não encontrado.'}, status=404)
 
@@ -44,12 +67,37 @@ class EnrollmentCreateView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        serializer = CandidatoAprovadoSerializer(
-            candidato, data=request.data, partial=True
-        )
+        params = ParametrosSistema.objects.filter(pk=1).first()
+        if params and not params.aceitar_novas_inscricoes:
+            raise ValidationError({'erro': 'Novas inscrições estão temporariamente suspensas.'})
+
+        data = request.data
+        if 'payload' in request.data:
+            try:
+                data = json.loads(request.data['payload'])
+            except (ValueError, TypeError):
+                raise ValidationError({'payload': 'JSON inválido.'})
+        validate_documents(request.FILES)
+        serializer = CandidatoAprovadoSerializer(candidato, data=data, partial=True)
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
+        required_fields = (
+            'nome', 'cpf', 'date_of_birth', 'dispatch_date', 'program_level',
+            'email', 'phone', 'emergency_contact_1', 'emergency_phone_1',
+            'emergency_contact_2', 'emergency_phone_2', 'zip_code', 'street',
+            'number', 'neighbourhood', 'city', 'state', 'institution', 'course',
+            'graduation_year', 'lattes_url', 'research_area', 'bank_name',
+            'compe_code', 'agency', 'account_number', 'bank_account_type',
+        )
+        missing = {field: 'Campo obrigatório.' for field in required_fields if not serializer.validated_data.get(field)}
+        if missing:
+            raise ValidationError(missing)
+        available_documents = set(candidato.documentos.values_list('tipo', flat=True)) | set(request.FILES)
+        if REQUIRED_DOCUMENT_TYPES - available_documents:
+            raise ValidationError({'documentos': 'Anexe todos os PDFs obrigatórios.'})
+
+        save_documents(candidato, request.FILES)
         serializer.save(formulario_enviado=True, status='AGUARDANDO')
         return Response(serializer.data, status=status.HTTP_200_OK)
 
@@ -82,6 +130,7 @@ class LoginCandidatoView(APIView):
 class TrocarSenhaView(APIView):
     permission_classes = [IsCandidate]
 
+    @transaction.atomic
     def post(self, request):
         user = request.user
         senha_atual = request.data.get('senha_atual')
@@ -93,15 +142,16 @@ class TrocarSenhaView(APIView):
         if not user.check_password(senha_atual):
             return Response({"error": "A senha atual está incorreta."}, status=400)
 
+        try:
+            validate_password(nova_senha, user)
+        except DjangoValidationError as exc:
+            return Response({'nova_senha': exc.messages}, status=400)
         user.set_password(nova_senha)
         user.save()
 
-        try:
-            candidato = user.candidato_aprovado
-            candidato.is_first_access = False
-            candidato.save()
-        except Exception:
-            pass
+        candidato = user.candidato_aprovado
+        candidato.is_first_access = False
+        candidato.save(update_fields=['is_first_access'])
 
         return Response({"message": "Senha atualizada com sucesso!"})
 
@@ -129,69 +179,56 @@ class ImportarCandidatosView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        periodo = PeriodoMatricula.objects.create(
-            nome=titulo,
-            programa=programa,
-            data_abertura=data_inicio,
-            data_fechamento=data_fim,
-            ativo=True
-        )
-
+        period_serializer = PeriodoMatriculaSerializer(data={
+            'titulo': titulo, 'programa': programa,
+            'data_inicio': data_inicio, 'data_fim': data_fim,
+        })
+        period_serializer.is_valid(raise_exception=True)
         try:
             conteudo = arquivo.read().decode('utf-8-sig')
             reader = csv.DictReader(io.StringIO(conteudo))
+            if not reader.fieldnames:
+                raise ValueError('CSV vazio.')
             reader.fieldnames = [h.strip().lower() for h in reader.fieldnames]
+            if not {'nome', 'cpf', 'inscricao'}.issubset(reader.fieldnames):
+                raise ValueError('Colunas obrigatorias: nome, cpf, inscricao.')
+            rows = list(reader)
+        except (UnicodeDecodeError, csv.Error, ValueError) as exc:
+            raise ValidationError({'file': str(exc)})
 
-            criados = 0
-            erros = []
+        valid_rows, erros, seen = [], [], set()
+        for i, linha in enumerate(rows, start=2):
+            values = {key: (linha.get(key) or '').strip() for key in ('nome', 'cpf', 'inscricao', 'email')}
+            nome, cpf, inscricao = values['nome'], values['cpf'], values['inscricao']
+            if not all((nome, cpf, inscricao)):
+                erros.append(f'Linha {i}: nome, cpf e inscricao sao obrigatorios')
+                continue
+            if len(nome) > 255 or len(cpf) > 14 or len(inscricao) > 20:
+                erros.append(f'Linha {i}: campo excede o tamanho permitido')
+                continue
+            if (inscricao in seen or User.objects.filter(username=inscricao).exists()
+                    or CandidatoAprovado.objects.filter(inscricao=inscricao).exists()):
+                erros.append(f'Linha {i}: inscricao ja vinculada a uma conta ou candidato')
+                continue
+            seen.add(inscricao)
+            valid_rows.append(values)
+        if not valid_rows:
+            return Response({'erro': 'Nenhum candidato valido.', 'erros': erros}, status=400)
 
-            for i, linha in enumerate(reader, start=2):
-                nome      = linha.get('nome', '').strip()
-                cpf       = linha.get('cpf', '').strip()
-                inscricao = linha.get('inscricao', '').strip()
-                email     = linha.get('email', '').strip()
+        params = ParametrosSistema.objects.filter(pk=1).first()
+        limite = params.max_candidatos_por_periodo if params else 100
+        if len(valid_rows) > limite:
+            raise ValidationError({'file': f'O limite por período é de {limite} candidatos.'})
 
-                if not nome or not cpf:
-                    erros.append(f"Linha {i}: nome e cpf são obrigatórios")
-                    continue
-
-                if not inscricao:
-                    erros.append(f'Linha {i}: inscrição é obrigatória')
-                    continue
-                if (User.objects.filter(username=inscricao).exists()
-                        or CandidatoAprovado.objects.filter(inscricao=inscricao).exists()):
-                    erros.append(f'Linha {i}: inscrição já vinculada a uma conta ou candidato')
-                    continue
-
-                candidato = CandidatoAprovado.objects.create(
-                    periodo=periodo,
-                    nome=nome,
-                    cpf=cpf,
-                    inscricao=inscricao,
-                    email=email,
-                    status='PENDING'
-                )
-
-                # Usa inscricao como username (login) e CPF como senha inicial
-                user = User.objects.create_user(username=inscricao, password=cpf)
-
-                candidato.user = user
-                candidato.save()
-                criados += 1
-
-        except Exception as e:
-            periodo.delete()
-            return Response(
-                {'erro': f'Erro ao processar CSV: {str(e)}'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+        with transaction.atomic():
+            periodo = period_serializer.save()
+            for values in valid_rows:
+                user = User.objects.create_user(username=values['inscricao'], password=values['cpf'])
+                CandidatoAprovado.objects.create(periodo=periodo, user=user, **values)
 
         return Response({
-            'sucesso': True,
-            'periodo_id': periodo.id,
-            'periodo_nome': periodo.nome,
-            'candidatos_importados': criados,
-            'erros': erros,
+            'sucesso': True, 'periodo_id': periodo.id, 'periodo_nome': periodo.nome,
+            'candidatos_importados': len(valid_rows), 'erros': erros,
         }, status=status.HTTP_201_CREATED)
 
 
@@ -225,7 +262,10 @@ class EnrollmentStatusUpdateView(APIView):
         if not candidato:
             return Response({'erro': 'Candidato não encontrado.'}, status=404)
 
-        novo_status = request.data.get('status', '').upper()
+        novo_status = request.data.get('status')
+        if not isinstance(novo_status, str) or novo_status.upper() not in dict(CandidatoAprovado.STATUS_CHOICES):
+            return Response({'status': 'Status inválido.'}, status=400)
+        novo_status = novo_status.upper()
         candidato.status = novo_status
         candidato.save()
         return Response({'id': pk, 'status': candidato.status})
@@ -240,8 +280,8 @@ class EnrollmentComprovanteView(APIView):
         if not candidato:
             return Response({'erro': 'Candidato não encontrado.'}, status=404)
 
-        tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.pdf')
-        c = canvas.Canvas(tmp.name, pagesize=A4)
+        tmp = io.BytesIO()
+        c = canvas.Canvas(tmp, pagesize=A4)
         width, height = A4
 
         c.setFont("Helvetica-Bold", 16)
@@ -271,18 +311,9 @@ class EnrollmentComprovanteView(APIView):
             y -= 22
 
         c.save()
-        tmp.close()
-
-        response = FileResponse(open(tmp.name, 'rb'), content_type='application/pdf')
+        tmp.seek(0)
+        response = FileResponse(tmp, content_type='application/pdf')
         response['Content-Disposition'] = f'attachment; filename="comprovante_{pk}.pdf"'
-
-        def deletar():
-            time.sleep(5)
-            try:
-                os.unlink(tmp.name)
-            except Exception:
-                pass
-        threading.Thread(target=deletar, daemon=True).start()
 
         return response
 
@@ -313,20 +344,12 @@ class EnrollmentDocumentosView(APIView):
         if not candidato:
             return Response({'erro': 'Candidato não encontrado.'}, status=404)
 
-        tipos_validos = [
-            'diploma', 'historico', 'rg', 'cpf',
-            'titulo', 'comp_votacao', 'comp_residencia', 'reservista'
-        ]
-        salvos = []
-        for tipo in tipos_validos:
-            arquivo = request.FILES.get(tipo)
-            if arquivo:
-                DocumentoCandidato.objects.create(
-                    candidato=candidato,
-                    tipo=tipo,
-                    arquivo=arquivo
-                )
-                salvos.append(tipo)
+        if not request.FILES:
+            raise ValidationError({'arquivos': 'Selecione pelo menos um PDF.'})
+        validate_documents(request.FILES)
+        with transaction.atomic():
+            save_documents(candidato, request.FILES)
+        salvos = list(request.FILES)
 
         return Response({'salvos': salvos}, status=201)
     

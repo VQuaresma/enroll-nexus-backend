@@ -7,6 +7,18 @@ from .models import AdminProfile, ParametrosSistema
 
 
 class AdminAuthorizationTests(APITestCase):
+    def test_root_profile_reports_management_role(self):
+        self.authenticate(self.root)
+        response = self.client.get('/api/configuracoes/perfil/')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['role'], 'super_admin')
+
+    def test_parameters_reject_non_positive_limits(self):
+        self.authenticate(self.admin)
+        for field in ['max_candidatos_por_periodo', 'candidatos_por_pagina']:
+            for value in [0, -1]:
+                self.assertEqual(self.client.patch('/api/configuracoes/parametros/', {field: value}, format='json').status_code, 400)
+
     def setUp(self):
         self.admin = User.objects.create_user(
             username='evaluator', password='admin-password', is_staff=True,

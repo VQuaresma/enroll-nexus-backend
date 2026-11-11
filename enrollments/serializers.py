@@ -2,6 +2,8 @@ from rest_framework import serializers
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.contrib.auth.models import User
 from django.db import transaction
+from django.utils import timezone
+import re
 from .models import CandidatoAprovado, PeriodoMatricula, DocumentoCandidato
 
 
@@ -22,6 +24,37 @@ class DocumentoSerializer(serializers.ModelSerializer):
 
 # ── Candidato (modelo unificado) ──────────────────────────────────────────────
 class CandidatoAprovadoSerializer(serializers.ModelSerializer):
+    program_level = serializers.ChoiceField(choices=['MESTRADO', 'DOUTORADO'], required=False)
+    bank_account_type = serializers.ChoiceField(choices=['CC', 'CP', 'CS'], required=False)
+
+    def validate_cpf(self, value):
+        digits = re.sub(r'\D', '', value)
+        if len(digits) != 11 or len(set(digits)) == 1:
+            raise serializers.ValidationError('CPF inválido.')
+        for size in (9, 10):
+            check = (sum(int(digits[i]) * (size + 1 - i) for i in range(size)) * 10) % 11
+            if int(digits[size]) != (0 if check == 10 else check):
+                raise serializers.ValidationError('CPF inválido.')
+        return digits
+
+    def validate_date_of_birth(self, value):
+        if value:
+            today = timezone.localdate()
+            age = today.year - value.year - ((today.month, today.day) < (value.month, value.day))
+            if age < 17:
+                raise serializers.ValidationError('É necessário ter no mínimo 17 anos.')
+        return value
+
+    def validate_graduation_year(self, value):
+        if value and (not value.isdigit() or not 1950 <= int(value) <= timezone.localdate().year):
+            raise serializers.ValidationError('Ano de conclusão inválido.')
+        return value
+
+    def validate_compe_code(self, value):
+        if value and not re.fullmatch(r'\d{3}', value):
+            raise serializers.ValidationError('Informe três dígitos.')
+        return value
+
     protected_fields = {
         'id', 'user', 'user_id', 'periodo', 'periodo_id', 'inscricao', 'status',
         'formulario_enviado', 'is_first_access', 'criado_em', 'created_at',
@@ -57,6 +90,10 @@ class CandidatoAprovadoSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({
                 field: 'Este campo é controlado pelo servidor.' for field in sorted(forbidden)
             })
+        data = data.copy()
+        for field in ('date_of_birth', 'dispatch_date', 'military_dispatch_date'):
+            if data.get(field) == '':
+                data[field] = None
         return super().to_internal_value(data)
 
     def get_programa(self, obj):
@@ -66,12 +103,12 @@ class CandidatoAprovadoSerializer(serializers.ModelSerializer):
 # ── Login ─────────────────────────────────────────────────────────────────────
 class LoginCandidatoSerializer(serializers.Serializer):
     inscricao = serializers.CharField()
-    senha = serializers.CharField()
+    senha = serializers.CharField(trim_whitespace=False)
 
     @transaction.atomic
     def validate(self, attrs):
         inscricao = str(attrs.get('inscricao', '')).strip()
-        senha = str(attrs.get('senha', '')).strip()
+        senha = attrs['senha']
 
         candidato = CandidatoAprovado.objects.select_for_update().filter(inscricao=inscricao).first()
         if not candidato:
@@ -95,6 +132,7 @@ class LoginCandidatoSerializer(serializers.Serializer):
             'access':         str(refresh.access_token),
             'refresh':        str(refresh),
             'nome':           candidato.nome,
+            'programa':       candidato.periodo.programa,
             'inscricao':      candidato.inscricao,
             'is_first_access': candidato.is_first_access,
             'formulario_enviado': candidato.formulario_enviado,
@@ -118,13 +156,20 @@ class PeriodoMatriculaSerializer(serializers.ModelSerializer):
             'programa', 'total_candidatos', 'ativo', 'candidatos'
         ]
 
+    def validate(self, attrs):
+        inicio = attrs.get('data_abertura', getattr(self.instance, 'data_abertura', None))
+        fim = attrs.get('data_fechamento', getattr(self.instance, 'data_fechamento', None))
+        if inicio and fim and fim < inicio:
+            raise serializers.ValidationError({'data_fim': 'O fechamento deve ser posterior ou igual ? abertura.'})
+        return attrs
+
     def get_total_candidatos(self, obj):
         return obj.candidatoaprovado_set.count()
 
     def get_ativo(self, obj):
-        from datetime import date
-        hoje = date.today()
-        return obj.data_abertura <= hoje <= obj.data_fechamento
+        from django.utils import timezone
+        hoje = timezone.localdate()
+        return obj.ativo and obj.data_abertura <= hoje <= obj.data_fechamento
 
     def get_candidatos(self, obj):
         resultado = []

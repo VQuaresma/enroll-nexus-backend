@@ -5,6 +5,7 @@ from rest_framework.permissions import SAFE_METHODS
 from rest_framework_simplejwt.views import TokenObtainPairView
 from core.permissions import IsAdmin, IsSuperAdmin
 from django.contrib.auth.models import User
+from django.db import transaction
 from django.contrib.auth import update_session_auth_hash
 
 from .models import AdminProfile, ParametrosSistema
@@ -39,7 +40,7 @@ class AlterarSenhaView(APIView):
     permission_classes = [IsAdmin]
 
     def post(self, request):
-        serializer = AlterarSenhaSerializer(data=request.data)
+        serializer = AlterarSenhaSerializer(data=request.data, context={'request': request})
         serializer.is_valid(raise_exception=True)
 
         if not request.user.check_password(serializer.validated_data['senha_atual']):
@@ -60,6 +61,7 @@ class AdminUsuariosView(APIView):
         admins = User.objects.filter(is_staff=True).select_related('admin_profile')
         return Response(AdminUsuarioSerializer(admins, many=True).data)
 
+    @transaction.atomic
     def post(self, request):
         serializer = ConvidarAdminSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
