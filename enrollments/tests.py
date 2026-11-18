@@ -1,5 +1,6 @@
 from datetime import timedelta
 import json
+import tempfile
 from unittest.mock import patch
 
 from django.contrib.auth.models import User
@@ -14,6 +15,26 @@ from .models import CandidatoAprovado, DocumentoCandidato, PeriodoMatricula
 
 
 class EnrollmentAuthTests(APITestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls._media_directory = tempfile.TemporaryDirectory(prefix='neb-django-tests-')
+        cls._media_settings = override_settings(MEDIA_ROOT=cls._media_directory.name)
+        cls._media_settings.enable()
+        try:
+            super().setUpClass()
+        except Exception:
+            cls._media_settings.disable()
+            cls._media_directory.cleanup()
+            raise
+
+    @classmethod
+    def tearDownClass(cls):
+        try:
+            super().tearDownClass()
+        finally:
+            cls._media_settings.disable()
+            cls._media_directory.cleanup()
+
     def submission_data(self):
         return {
             'full_name': 'Candidato Atualizado', 'cpf': '52998224725',
