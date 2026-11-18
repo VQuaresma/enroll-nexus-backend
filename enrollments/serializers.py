@@ -152,7 +152,7 @@ class PeriodoMatriculaSerializer(serializers.ModelSerializer):
     class Meta:
         model = PeriodoMatricula
         fields = [
-            'id', 'titulo', 'data_inicio', 'data_fim',
+            'id', 'titulo', 'descricao', 'data_inicio', 'data_fim',
             'programa', 'total_candidatos', 'ativo', 'candidatos'
         ]
 
@@ -164,7 +164,8 @@ class PeriodoMatriculaSerializer(serializers.ModelSerializer):
         return attrs
 
     def get_total_candidatos(self, obj):
-        return obj.candidatoaprovado_set.count()
+        total = getattr(obj, 'total_candidatos', None)
+        return total if total is not None else obj.candidatoaprovado_set.count()
 
     def get_ativo(self, obj):
         from django.utils import timezone

@@ -4,6 +4,7 @@ from django.core.exceptions import ImproperlyConfigured
 from .settings import *  # noqa: F403
 
 DEBUG = False
+PORTAL_ENABLED = env.bool('PORTAL_ENABLED', default=False)
 SECRET_KEY = os.environ.get('SECRET_KEY', '')
 if len(SECRET_KEY) < 50 or SECRET_KEY.startswith(('django-insecure-', 'sua_chave_')):
     raise ImproperlyConfigured('Configure uma SECRET_KEY de produção com pelo menos 50 caracteres.')
@@ -38,6 +39,8 @@ SECURE_HSTS_PRELOAD = True
 MIDDLEWARE = list(MIDDLEWARE)
 MIDDLEWARE.insert(MIDDLEWARE.index('django.middleware.security.SecurityMiddleware') + 1,
                   'whitenoise.middleware.WhiteNoiseMiddleware')
+MIDDLEWARE.insert(MIDDLEWARE.index('whitenoise.middleware.WhiteNoiseMiddleware') + 1,
+                  'core.middleware.PortalAvailabilityMiddleware')
 STATIC_URL = '/static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
 STORAGES = {

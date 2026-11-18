@@ -57,6 +57,52 @@ class EnrollmentAuthTests(APITestCase):
         self.candidate.refresh_from_db()
         self.assertFalse(self.candidate.formulario_enviado)
 
+    def test_candidate_cannot_submit_after_its_period_closes(self):
+        today = timezone.localdate()
+        self.period.data_abertura = today - timedelta(days=2)
+        self.period.data_fechamento = today - timedelta(days=1)
+        self.period.save()
+        self.authenticate(self.owner)
+        response = self.client.post(
+            '/api/enrollments/submit/', self.submission_data(), format='json'
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('periodo', response.data)
+        self.candidate.refresh_from_db()
+        self.assertFalse(self.candidate.formulario_enviado)
+
+    def test_candidate_programs_are_dynamic_and_only_linked_period_is_eligible(self):
+        today = timezone.localdate()
+        PeriodoMatricula.objects.create(
+            nome='Seleção aberta', programa='PGEDA',
+            data_abertura=today - timedelta(days=1),
+            data_fechamento=today + timedelta(days=1),
+        )
+        self.authenticate(self.owner)
+        response = self.client.get('/api/enrollments/candidato/programas/')
+        self.assertEqual(response.status_code, 200)
+        programs = {item['codigo']: item for item in response.data}
+        self.assertEqual(set(programs), {'PGEDA', 'PPEB', 'PPESP'})
+        self.assertTrue(programs['PGEDA']['aberto'])
+        self.assertFalse(programs['PGEDA']['vinculado'])
+        self.assertFalse(programs['PGEDA']['pode_iniciar'])
+        self.assertFalse(programs['PPESP']['aberto'])
+        self.assertIsNone(programs['PPESP']['periodo_titulo'])
+        self.assertTrue(programs['PPEB']['vinculado'])
+        self.assertTrue(programs['PPEB']['pode_iniciar'])
+        self.assertNotIn('cpf', programs['PGEDA'])
+        self.assertNotIn('candidatos', programs['PPEB'])
+
+    def test_admin_program_catalog_is_permission_protected(self):
+        self.authenticate(self.admin)
+        response = self.client.get('/api/enrollments/programas/')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual({item['codigo'] for item in response.data}, {'PGEDA', 'PPEB', 'PPESP'})
+        ppesp = next(item for item in response.data if item['codigo'] == 'PPESP')
+        self.assertEqual(ppesp['nome'], 'PPESP')
+        self.authenticate(self.owner)
+        self.assertEqual(self.client.get('/api/enrollments/programas/').status_code, 403)
+
     def test_import_respects_configured_capacity(self):
         ParametrosSistema.objects.create(max_candidatos_por_periodo=1)
         self.authenticate(self.admin)
@@ -185,7 +231,12 @@ class EnrollmentAuthTests(APITestCase):
                 response = self.client.get(self.candidate_url(suffix))
                 self.assertEqual(response.status_code, 200)
                 response.close()
-        self.assertEqual(self.client.get('/api/enrollments/candidato/situacao/').status_code, 200)
+        situation = self.client.get('/api/enrollments/candidato/situacao/')
+        self.assertEqual(situation.status_code, 200)
+        self.assertEqual(
+            set(situation.data['documentos_enviados']),
+            {'rg', 'diploma', 'historico', 'cpf', 'titulo', 'comp_votacao', 'comp_residencia'},
+        )
 
     def test_candidate_cannot_read_another_candidate(self):
         self.authenticate(self.other)
@@ -255,6 +306,35 @@ class EnrollmentAuthTests(APITestCase):
                 candidate.refresh_from_db()
                 self.assertEqual(candidate.status, status.upper())
 
+    def test_administrative_program_filters_scope_candidate_and_period_lists(self):
+        ppesp_period = PeriodoMatricula.objects.create(
+            nome='Período PPESP', programa='PPESP',
+            data_abertura='2026-01-01', data_fechamento='2026-12-31',
+        )
+        ppesp_candidate = CandidatoAprovado.objects.create(
+            periodo=ppesp_period, nome='Candidato PPESP',
+            cpf='00000000002', inscricao='candidate-ppesp',
+        )
+        self.authenticate(self.admin)
+
+        candidates = self.client.get('/api/enrollments/list/?program=PPESP')
+        self.assertEqual(candidates.status_code, 200)
+        self.assertEqual([item['id'] for item in candidates.data], [ppesp_candidate.pk])
+
+        periods = self.client.get('/api/enrollments/periodos/?program=PPESP')
+        self.assertEqual(periods.status_code, 200)
+        self.assertEqual([item['id'] for item in periods.data], [ppesp_period.pk])
+        self.assertEqual(periods.data[0]['total_candidatos'], 1)
+
+    def test_ppesp_can_be_configured_as_a_period_program(self):
+        self.authenticate(self.admin)
+        response = self.client.post('/api/enrollments/periodos/', {
+            'titulo': 'Período PPESP', 'programa': 'PPESP',
+            'data_inicio': '2026-01-01', 'data_fim': '2026-12-31',
+        }, format='json')
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data['programa'], 'PPESP')
+
     def test_evaluator_can_create_edit_and_reopen_periods(self):
         self.authenticate(self.admin)
         response = self.client.post('/api/enrollments/periodos/', {
@@ -270,6 +350,7 @@ class EnrollmentAuthTests(APITestCase):
     def import_csv(self, text):
         return self.client.post('/api/enrollments/import/', {
             'titulo': 'Importacao de teste', 'program': 'PPEB',
+            'descricao': 'Período de pré-matrícula',
             'data_inicio': '2026-01-01', 'data_fim': '2026-12-31',
             'file': SimpleUploadedFile('test.csv', text.encode(), content_type='text/csv'),
         })
@@ -282,6 +363,7 @@ class EnrollmentAuthTests(APITestCase):
         candidate = CandidatoAprovado.objects.get(inscricao='new-candidate')
         self.assertFalse(candidate.user.is_staff)
         self.assertTrue(candidate.user.check_password('00000000002'))
+        self.assertEqual(candidate.periodo.descricao, 'Período de pré-matrícula')
 
     def test_import_cannot_overwrite_existing_accounts(self):
         self.authenticate(self.admin)

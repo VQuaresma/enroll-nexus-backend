@@ -13,9 +13,13 @@ from .views import (
     ComprovanteDataView,
     CandidatoSituacaoView,
     EnrollmentDetailView,
+    ProgramasDisponiveisView,
+    ProgramasAdministrativosView,
 )
 
 urlpatterns = [
+    path('programas/', ProgramasAdministrativosView.as_view(), name='programas-list'),
+    path('candidato/programas/', ProgramasDisponiveisView.as_view(), name='candidato-programas'),
     path('submit/', EnrollmentCreateView.as_view(), name='enrollment-submit'),
     path('list/', EnrollmentListView.as_view(), name='enrollment-list'),
     path('import/', ImportarCandidatosView.as_view(), name='enrollment-import'),

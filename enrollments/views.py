@@ -8,6 +8,8 @@ from django.contrib.auth.models import User
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
+from django.db.models import Count
+from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import A4
@@ -67,6 +69,13 @@ class EnrollmentCreateView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
+        hoje = timezone.localdate()
+        if not (
+            candidato.periodo.ativo
+            and candidato.periodo.data_abertura <= hoje <= candidato.periodo.data_fechamento
+        ):
+            raise ValidationError({'periodo': 'O período de pré-matrícula está encerrado.'})
+
         params = ParametrosSistema.objects.filter(pk=1).first()
         if params and not params.aceitar_novas_inscricoes:
             raise ValidationError({'erro': 'Novas inscrições estão temporariamente suspensas.'})
@@ -108,7 +117,7 @@ class EnrollmentListView(generics.ListAPIView):
     permission_classes = [IsAdmin]
 
     def get_queryset(self):
-        qs = CandidatoAprovado.objects.prefetch_related('documentos').order_by('-id')
+        qs = CandidatoAprovado.objects.select_related('periodo').prefetch_related('documentos').order_by('-id')
         programa = self.request.query_params.get('program')
         if programa:
             qs = qs.filter(periodo__programa__iexact=programa)
@@ -180,7 +189,7 @@ class ImportarCandidatosView(APIView):
             )
 
         period_serializer = PeriodoMatriculaSerializer(data={
-            'titulo': titulo, 'programa': programa,
+            'titulo': titulo, 'descricao': descricao, 'programa': programa,
             'data_inicio': data_inicio, 'data_fim': data_fim,
         })
         period_serializer.is_valid(raise_exception=True)
@@ -238,11 +247,79 @@ class PeriodoMatriculaListCreateView(generics.ListCreateAPIView):
     permission_classes = [IsAdmin]
 
     def get_queryset(self):
-        qs = PeriodoMatricula.objects.all().order_by('-id')
+        qs = PeriodoMatricula.objects.annotate(
+            total_candidatos=Count('candidatoaprovado')
+        ).prefetch_related('candidatoaprovado_set').order_by('-id')
         programa = self.request.query_params.get('program')
         if programa:
             qs = qs.filter(programa__iexact=programa)
         return qs
+
+
+class ProgramasDisponiveisView(APIView):
+    permission_classes = [IsCandidate]
+
+    def get(self, request):
+        candidato = CandidatoAprovado.objects.select_related('periodo').filter(
+            user=request.user
+        ).first()
+        if not candidato:
+            return Response({'erro': 'Candidato não encontrado.'}, status=404)
+
+        hoje = timezone.localdate()
+        choices = PeriodoMatricula._meta.get_field('programa').choices
+        programas = []
+        for codigo, nome in choices:
+            periodos = list(
+                PeriodoMatricula.objects.filter(programa=codigo).order_by(
+                    '-data_abertura', '-id'
+                )
+            )
+            vinculado = candidato.periodo if candidato.periodo.programa == codigo else None
+            periodo = vinculado or next(
+                (
+                    item for item in periodos
+                    if item.ativo and item.data_abertura <= hoje <= item.data_fechamento
+                ),
+                periodos[0] if periodos else None,
+            )
+            aberto = bool(
+                periodo
+                and periodo.ativo
+                and periodo.data_abertura <= hoje <= periodo.data_fechamento
+            )
+            elegivel = bool(
+                vinculado
+                and periodo
+                and periodo.pk == vinculado.pk
+                and aberto
+                and not candidato.formulario_enviado
+                and candidato.status in {'PENDING', 'ANDAMENTO'}
+            )
+            programas.append({
+                'codigo': codigo,
+                'nome': nome,
+                'descricao': periodo.descricao if periodo else '',
+                'periodo_titulo': periodo.nome if periodo else None,
+                'periodo_inicio': str(periodo.data_abertura) if periodo else None,
+                'periodo_fim': str(periodo.data_fechamento) if periodo else None,
+                'aberto': aberto,
+                'vinculado': bool(vinculado),
+                'formulario_enviado': candidato.formulario_enviado if vinculado else False,
+                'status': candidato.status if vinculado else None,
+                'pode_iniciar': elegivel,
+            })
+        return Response(programas)
+
+
+class ProgramasAdministrativosView(APIView):
+    permission_classes = [IsAdmin]
+
+    def get(self, request):
+        return Response([
+            {'codigo': codigo, 'nome': nome}
+            for codigo, nome in PeriodoMatricula._meta.get_field('programa').choices
+        ])
 
 
 # ── 7. Detalhe/editar período (sem deletar) ───────────────────────────────────
@@ -435,6 +512,9 @@ class CandidatoSituacaoView(APIView):
             'periodo_titulo':     candidato.periodo.nome if candidato.periodo else None,
             'periodo_inicio':     str(candidato.periodo.data_abertura) if candidato.periodo else None,
             'periodo_fim':        str(candidato.periodo.data_fechamento) if candidato.periodo else None,
+            'documentos_enviados': list(
+                candidato.documentos.values_list('tipo', flat=True).distinct()
+            ),
         })
     
 class EnrollmentDetailView(RetrieveAPIView):

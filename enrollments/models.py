@@ -2,9 +2,17 @@ from django.db import models
 from django.contrib.auth.models import User
 
 
+PROGRAMAS_CHOICES = [
+    ('PGEDA', 'PGEDA'),
+    ('PPEB', 'PPEB'),
+    ('PPESP', 'PPESP'),
+]
+
+
 class PeriodoMatricula(models.Model):
     nome = models.CharField(max_length=100)
-    programa = models.CharField(max_length=10, choices=[('PGEDA', 'PGEDA'), ('PPEB', 'PPEB')])
+    programa = models.CharField(max_length=10, choices=PROGRAMAS_CHOICES)
+    descricao = models.TextField(blank=True, default='')
     data_abertura = models.DateField()
     data_fechamento = models.DateField()
     ativo = models.BooleanField(default=True)

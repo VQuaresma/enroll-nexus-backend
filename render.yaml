@@ -7,7 +7,7 @@ services:
     repo: https://github.com/VQuaresma/enroll-nexus-backend
     plan: starter
     buildCommand: bash build-render.sh
-    startCommand: python manage.py migrate --noinput && gunicorn core.wsgi:application --bind 0.0.0.0:$PORT --workers 2 --timeout 120
+    startCommand: gunicorn core.wsgi:application --bind 0.0.0.0:$PORT --workers 2 --timeout 120
     healthCheckPath: /health/
     autoDeployTrigger: off
     disk:
@@ -21,6 +21,8 @@ services:
         generateValue: true
       - key: DEBUG
         value: "False"
+      - key: PORTAL_ENABLED
+        value: "false"
       - key: DATABASE_URL
         fromDatabase:
           name: enroll-nexus-production-db
